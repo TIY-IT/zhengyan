@@ -1,0 +1,24 @@
+# HITRAN raw line data (~1.2 GB, re-downloadable)
+Hitran/
+
+# Generated model outputs / datasets
+11111/outputs/
+V2.2/outputs/
+
+# Model checkpoints and large binary arrays
+*.pt
+*.pth
+*.npz
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
