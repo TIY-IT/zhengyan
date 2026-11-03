@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>光谱正演与反演控制台</title>
+<style>
+:root{
+  --bg:#f4f6fa;--panel:#ffffff;--ink:#16202e;--muted:#64708a;--line:#e1e6ef;
+  --accent:#2f6df6;--accent-soft:#e6eeff;--ok:#12a36b;--warn:#d98a00;--bad:#d93c3c;
+  --track:#e8edf6;--console:#0f1623;--console-ink:#cfe0ff;--shadow:0 1px 2px rgba(20,30,60,.06),0 8px 24px rgba(20,30,60,.06);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0d121c;--panel:#151c2b;--ink:#e6ecf8;--muted:#8d9ab5;--line:#243047;
+  --accent:#5b92ff;--accent-soft:#1b2a4d;--ok:#35c98e;--warn:#f0b13a;--bad:#ff6b6b;
+  --track:#212c42;--console:#090d15;--console-ink:#b9ccf2;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35);}}
+:root[data-theme="dark"]{
+  --bg:#0d121c;--panel:#151c2b;--ink:#e6ecf8;--muted:#8d9ab5;--line:#243047;
+  --accent:#5b92ff;--accent-soft:#1b2a4d;--ok:#35c98e;--warn:#f0b13a;--bad:#ff6b6b;
+  --track:#212c42;--console:#090d15;--console-ink:#b9ccf2;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35);}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+header{display:flex;align-items:center;gap:14px;padding:16px 24px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font-size:18px;margin:0;font-weight:650}
+header .sub{color:var(--muted);font-size:12.5px}
+header .sp{flex:1}
+.pill{padding:3px 11px;border-radius:99px;font-size:12px;font-weight:600;background:var(--accent-soft);color:var(--accent)}
+.pill.run{background:var(--accent-soft);color:var(--accent)}.pill.ok{background:rgba(18,163,107,.14);color:var(--ok)}
+.pill.bad{background:rgba(217,60,60,.14);color:var(--bad)}
+button.ghost{background:none;border:1px solid var(--line);color:var(--muted);border-radius:8px;padding:5px 10px;cursor:pointer}
+main{display:grid;grid-template-columns:minmax(300px,380px) 1fr;gap:20px;padding:20px 24px;max-width:1500px;margin:0 auto}
+@media(max-width:980px){main{grid-template-columns:1fr;padding:16px}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:18px}
+.card h2{font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin:0 0 12px;font-weight:650}
+label{display:block;font-size:12.5px;color:var(--muted);margin:10px 0 4px}
+input[type=text],input[type=number],select{width:100%;padding:8px 10px;border-radius:9px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit}
+input:focus,select:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.hint{font-size:11.5px;color:var(--muted);margin-top:3px}
+.checks{display:flex;flex-wrap:wrap;gap:8px}
+.chk{display:flex;align-items:center;gap:6px;padding:6px 11px;border:1px solid var(--line);border-radius:99px;cursor:pointer;font-size:13px;color:var(--ink);margin:0}
+.chk input{accent-color:var(--accent)}
+.actions{display:flex;gap:10px;margin-top:16px}
+.btn{flex:1;padding:11px 14px;border:0;border-radius:10px;font:inherit;font-weight:650;cursor:pointer;color:#fff;background:var(--accent)}
+.btn:disabled{opacity:.45;cursor:not-allowed}.btn.stop{background:var(--bad);flex:0 0 96px}
+details{margin-top:12px}summary{cursor:pointer;color:var(--accent);font-weight:600;font-size:13px}
+.hero{display:flex;align-items:center;gap:24px;flex-wrap:wrap}
+.ring{--p:0;width:132px;height:132px;border-radius:50%;flex:none;display:grid;place-items:center;
+  background:conic-gradient(var(--accent) calc(var(--p)*1%),var(--track) 0)}
+.ring.ok{background:conic-gradient(var(--ok) 100%,var(--track) 0)}
+.ring.bad{background:conic-gradient(var(--bad) calc(var(--p)*1%),var(--track) 0)}
+.ring>div{width:100px;height:100px;border-radius:50%;background:var(--panel);display:grid;place-items:center;text-align:center}
+.ring b{font-size:26px;font-variant-numeric:tabular-nums;line-height:1}.ring span{font-size:11px;color:var(--muted)}
+.stats{display:grid;grid-template-columns:repeat(3,minmax(90px,1fr));gap:14px 26px;flex:1}
+.stat small{display:block;color:var(--muted);font-size:11.5px}.stat strong{font-size:18px;font-variant-numeric:tabular-nums}
+.stage{padding:13px 0;border-top:1px solid var(--line)}.stage:first-of-type{border-top:0}
+.stage .top{display:flex;align-items:center;gap:10px}
+.stage .name{font-weight:620;flex:1}.stage .pct{font-variant-numeric:tabular-nums;font-weight:650;min-width:56px;text-align:right}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--track)}
+.dot.running{background:var(--accent);box-shadow:0 0 0 4px var(--accent-soft);animation:pulse 1.2s infinite}
+.dot.done{background:var(--ok)}.dot.failed{background:var(--bad)}.dot.stopped,.dot.skipped{background:var(--warn)}
+@keyframes pulse{50%{box-shadow:0 0 0 7px transparent}}
+.bar{height:9px;border-radius:99px;background:var(--track);overflow:hidden;margin:9px 0 5px}
+.bar i{display:block;height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,var(--accent),#7aa8ff);transition:width .35s ease}
+.bar i.done{background:var(--ok)}.bar i.failed{background:var(--bad)}
+.stage .meta{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;gap:10px}
+.stage .meta span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stage.off{opacity:.4}
+#log{background:var(--console);color:var(--console-ink);border-radius:10px;padding:12px 14px;height:260px;overflow:auto;
+  font:12px/1.55 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all}
+#log .err{color:#ff9d9d}#log .cmd{color:#7fd6a8}
+.right{display:flex;flex-direction:column;gap:20px;min-width:0}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th,td{text-align:right;padding:7px 10px;border-bottom:1px solid var(--line);font-size:13px}th:first-child,td:first-child{text-align:left}
+th{color:var(--muted);font-weight:600;font-size:12px}
+.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+.gallery figure{margin:0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--bg);cursor:zoom-in}
+.gallery img{width:100%;display:block;aspect-ratio:4/3;object-fit:contain;background:#fff}
+.gallery figcaption{font-size:11.5px;color:var(--muted);padding:6px 9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#lightbox{position:fixed;inset:0;background:rgba(5,8,15,.86);display:none;place-items:center;z-index:9;padding:24px;cursor:zoom-out}
+#lightbox img{max-width:100%;max-height:100%;background:#fff;border-radius:8px}
+.empty{color:var(--muted);padding:6px 0}
+#err{color:var(--bad);font-size:12.5px;margin-top:10px;min-height:1em}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>光谱正演与反演控制台</h1><div class="sub">HITRAN/HITEMP 逐线正演 · 两流辐射转移 · 替代模型 · 参数反演</div></div>
+  <div class="sp"></div>
+  <span id="statePill" class="pill">就绪</span>
+  <button class="ghost" id="themeBtn" title="切换明暗主题">◐</button>
+</header>
+
+<main>
+<aside class="card">
+  <h2>运行设置</h2>
+  <label>要运行的步骤</label>
+  <div class="checks" id="stageChecks"></div>
+
+  <label>数据源</label>
+  <select id="data_source"><option value="auto">自动（HITEMP → LBL）</option><option value="hitemp">HITEMP 目录</option><option value="lbl">本地 LBL 目录</option><option value="line-file">单个 .par 文件</option></select>
+  <label>HITEMP 根目录</label><input type="text" id="hitemp_root">
+  <label>.par 文件（仅“单个文件”模式）</label><input type="text" id="line_file">
+
+  <div class="row">
+    <div><label>谱窗 (cm⁻¹)</label><input type="text" id="windows"></div>
+    <div><label>网格步长 (cm⁻¹)</label><input type="number" id="grid_step" step="0.01" min="0.001"></div>
+  </div>
+  <div class="row">
+    <div><label>正演样本数</label><input type="number" id="ml_samples" min="0"></div>
+    <div><label>计算设备</label><select id="device"><option value="auto">自动</option><option value="gpu">GPU</option><option value="cpu">CPU</option></select></div>
+  </div>
+  <label>输出目录</label><input type="text" id="output_dir">
+
+  <details open>
+    <summary>同位素与权重</summary>
+    <label>同位素权重（相对天然丰度）</label>
+    <input type="text" id="isotope_scale" placeholder="H2O:4=2.0,CH4:3=0.5">
+    <div class="hint">格式 物种:同位素编号=倍数；留空 = 天然丰度。编号见 isotopologue_inventory.csv。</div>
+    <label>谱窗损失权重（反演）</label>
+    <input type="text" id="window_weights" placeholder="1200-1400=1,1900-2300=2,2800-3200=1">
+    <div class="hint">会自动归一化到均值 1；留空 = 等权。</div>
+  </details>
+
+  <details>
+    <summary>高级</summary>
+    <div class="row">
+      <div><label>GPU 精度</label><select id="gpu_dtype"><option>float32</option><option>float64</option></select></div>
+      <div><label>训练迭代上限</label><input type="number" id="epochs" min="1"></div>
+    </div>
+    <div class="row">
+      <div><label>反演样本数（0=全部）</label><input type="number" id="inversion_samples" min="0"></div>
+      <div><label>反演起点数</label><input type="number" id="starts" min="1"></div>
+    </div>
+    <label class="chk" style="margin-top:12px"><input type="checkbox" id="skip_gpu_error"> 跳过 GPU/CPU 误差对照（更快）</label>
+    <label>Python 解释器</label><input type="text" id="python">
+  </details>
+
+  <div class="actions">
+    <button class="btn" id="startBtn">▶ 开始运行</button>
+    <button class="btn stop" id="stopBtn" disabled>■ 停止</button>
+  </div>
+  <div id="err"></div>
+</aside>
+
+<section class="right">
+  <div class="card">
+    <h2>总体进度</h2>
+    <div class="hero">
+      <div class="ring" id="ring"><div><div><b id="ringPct">0%</b><br><span id="ringMsg">待开始</span></div></div></div>
+      <div class="stats">
+        <div class="stat"><small>已用时间</small><strong id="elapsed">–</strong></div>
+        <div class="stat"><small>预计剩余</small><strong id="eta">–</strong></div>
+        <div class="stat"><small>步骤</small><strong id="stepCount">–</strong></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card"><h2>各步骤进度</h2><div id="stages"></div></div>
+
+  <div class="card"><h2>运行日志</h2><div id="log"></div></div>
+
+  <div class="card"><h2>结果</h2><div id="results"><div class="empty">运行结束后在这里查看指标与图像。</div></div></div>
+</section>
+</main>
+<div id="lightbox"><img alt=""></div>
+
+<script>
+const TOKEN="__TOKEN__";
+const $=id=>document.getElementById(id);
+const STAGES=[["forward","① 物理正演"],["train","② 训练替代模型"],["invert","③ 参数反演"],["visualize","④ 生成图像"]];
+const FIELDS=["data_source","hitemp_root","line_file","windows","grid_step","ml_samples","device","output_dir","isotope_scale",
+  "window_weights","gpu_dtype","epochs","inversion_samples","starts","python"];
+let since=0,wasRunning=false,lastResultsKey="";
+
+const fmt=s=>{s=Math.max(0,Math.round(+s||0));const h=Math.floor(s/3600),m=Math.floor(s%3600/60),r=s%60;
+  return h?`${h}h ${String(m).padStart(2,"0")}m`:m?`${m}m ${String(r).padStart(2,"0")}s`:`${r}s`};
+
+try{const t=localStorage.getItem("theme");if(t)document.documentElement.dataset.theme=t}catch(e){}
+$("themeBtn").onclick=()=>{const cur=document.documentElement.dataset.theme||(matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");
+  const next=cur==="dark"?"light":"dark";document.documentElement.dataset.theme=next;try{localStorage.setItem("theme",next)}catch(e){}};
+
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
+
+async function api(path,body){
+  const r=await fetch(path,body?{method:"POST",headers:{"Content-Type":"application/json","X-Token":TOKEN},body:JSON.stringify(body)}:undefined);
+  const j=await r.json();if(!r.ok)throw new Error(j.error||r.statusText);return j}
+
+function readConfig(){
+  const c={};
+  FIELDS.forEach(f=>c[f]=$(f).value);
+  c.skip_gpu_error=$("skip_gpu_error").checked;
+  c.stages=[...document.querySelectorAll("#stageChecks input:checked")].map(i=>i.value);
+  return c}
+
+async function init(){
+  const d=await api("/api/defaults");
+  FIELDS.forEach(f=>{$(f).value=d[f]??""});
+  $("skip_gpu_error").checked=!!d.skip_gpu_error;
+  $("stageChecks").innerHTML=STAGES.map(([id,name])=>
+    `<label class="chk"><input type="checkbox" value="${id}" ${d.stages.includes(id)?"checked":""}> ${name}</label>`).join("");
+  poll()}
+
+$("startBtn").onclick=async()=>{
+  $("err").textContent="";since=0;$("log").innerHTML="";lastResultsKey="";
+  try{await api("/api/start",readConfig())}catch(e){$("err").textContent=e.message}};
+$("stopBtn").onclick=()=>api("/api/stop",{}).catch(e=>$("err").textContent=e.message);
+
+function addLog(lines){
+  if(!lines.length)return;const el=$("log");const stick=el.scrollTop+el.clientHeight>=el.scrollHeight-30;
+  const frag=document.createDocumentFragment();
+  lines.slice(-400).forEach(l=>{const d=document.createElement("div");
+    if(l.startsWith("$ "))d.className="cmd";else if(/Traceback|Error|错误|失败|Exception/.test(l))d.className="err";
+    d.textContent=l;frag.appendChild(d)});
+  el.appendChild(frag);while(el.childNodes.length>2000)el.removeChild(el.firstChild);
+  if(stick)el.scrollTop=el.scrollHeight}
+
+function render(s){
+  const pct=Math.round(s.overall*100);
+  const ring=$("ring");ring.style.setProperty("--p",pct);
+  const allDone=!s.running&&s.message==="全部完成",failed=s.message==="失败";
+  ring.className="ring"+(allDone?" ok":failed?" bad":"");
+  $("ringPct").textContent=allDone?"100%":pct+"%";
+  $("ringMsg").textContent=s.running?"运行中":s.message;
+  const pill=$("statePill");pill.textContent=s.running?"运行中":s.message;
+  pill.className="pill "+(s.running?"run":allDone?"ok":failed?"bad":"");
+  $("elapsed").textContent=s.elapsed?fmt(s.elapsed):"–";
+  $("eta").textContent=s.running&&s.eta_seconds!==""?fmt(s.eta_seconds):"–";
+  const sel=s.stages.filter(x=>x.selected);
+  $("stepCount").textContent=sel.length?`${sel.filter(x=>x.status==="done").length} / ${sel.length}`:"–";
+  $("stages").innerHTML=s.stages.map(x=>{
+    const p=x.status==="done"?100:Math.round(x.fraction*100);
+    const badge={idle:"未选择",pending:"等待中",running:"进行中",done:"已完成",failed:"失败",stopped:"已停止",skipped:"已跳过"}[x.status]||x.status;
+    return `<div class="stage ${x.selected?"":"off"}"><div class="top"><span class="dot ${x.status}"></span>
+      <span class="name">${esc(x.title)}</span><span class="pill" style="background:none;color:var(--muted)">${badge}</span>
+      <span class="pct">${x.selected?p+"%":"–"}</span></div>
+      <div class="bar"><i class="${x.status==="done"?"done":x.status==="failed"?"failed":""}" style="width:${x.selected?p:0}%"></i></div>
+      <div class="meta"><span>${esc(x.detail||"")}</span><span>${x.elapsed?fmt(x.elapsed):""}${x.eta&&x.status==="running"?" · "+esc(x.eta):""}</span></div></div>`}).join("");
+  $("startBtn").disabled=s.running;$("stopBtn").disabled=!s.running;
+  addLog(s.log);since=s.next;
+  if(wasRunning&&!s.running)loadResults();
+  wasRunning=s.running}
+
+async function poll(){
+  try{render(await api("/api/state?since="+since))}catch(e){}
+  setTimeout(poll,700)}
+
+const NAMES={T_top:"T_top (K)",T_bottom:"T_bottom (K)",log10_X_H2O:"log X(H₂O)",log10_X_CO:"log X(CO)",log10_X_CH4:"log X(CH₄)",log10_X_NH3:"log X(NH₃)"};
+async function loadResults(){
+  const r=await api("/api/results");const key=JSON.stringify([r.images,r.metrics&&r.metrics.elapsed_seconds]);
+  if(key===lastResultsKey)return;lastResultsKey=key;let html="";
+  if(r.metrics&&r.metrics.parameters){
+    html+=`<table><tr><th>参数</th><th>MAE %</th><th>RMSE %</th><th>P95 %</th></tr>`+Object.entries(r.metrics.parameters).map(([k,v])=>
+      `<tr><td>${esc(NAMES[k]||k)}</td><td>${v.mae_percent.toFixed(2)}</td><td>${v.rmse_percent.toFixed(2)}</td><td>${v.p95_abs_percent.toFixed(2)}</td></tr>`).join("")+`</table>
+      <div class="hint" style="margin:8px 0 14px">${r.metrics.evaluation_rows} 个留出样本；无噪声合成光谱，仅代表同分布插值精度。${Object.keys(r.metrics.window_weights||{}).length?" 窗口权重："+esc(JSON.stringify(r.metrics.window_weights)):""}</div>`}
+  if(r.images.length)html+=`<div class="gallery">`+r.images.map(p=>`<figure><img loading="lazy" src="/files/${encodeURI(p)}" alt=""><figcaption>${esc(p)}</figcaption></figure>`).join("")+`</div>`;
+  if(r.files.length)html+=`<details style="margin-top:14px"><summary>CSV 文件（${r.files.length}）</summary><div class="hint">${r.files.map(f=>`<a href="/files/${encodeURI(f)}" target="_blank">${esc(f)}</a>`).join(" · ")}</div></details>`;
+  $("results").innerHTML=html||`<div class="empty">暂无可展示的结果。</div>`}
+document.addEventListener("click",e=>{const img=e.target.closest(".gallery figure img");
+  if(img){$("lightbox").firstElementChild.src=img.src;$("lightbox").style.display="grid"}else if(e.target.closest("#lightbox"))$("lightbox").style.display="none"});
+init();loadResults().catch(()=>{});
+</script>
+</body>
+</html>

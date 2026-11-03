@@ -1,3 +1,36 @@
+# V2.2 更新说明（先读这里）
+
+> 下方 “V1.1” 正文是旧版 MLP 单窗口流程的说明，命令行参数已与当前脚本不一致，仅作物理背景参考。
+> 当前脚本为：多窗口（默认 1200-1400 / 1900-2300 / 2800-3200 cm⁻¹）、6 参数（含 NH₃）、高斯过程替代模型 + `least_squares` 反演。
+
+## 图形界面（进度百分比、日志、结果图）
+
+```powershell
+python dashboard.py          # 浏览器自动打开 http://127.0.0.1:8765
+```
+
+Windows 可双击 `run_dashboard.bat`。界面按“正演 → 训练 → 反演 → 画图”串联运行，实时显示总进度和各步骤百分比、预计剩余时间、日志，结束后展示反演指标表和图像。仅依赖 Python 标准库，只监听本机 127.0.0.1。
+
+## 同位素处理
+
+- 每条谱线按自己的同位素编号取**质量**（决定多普勒线宽）和**配分函数 Q(T)**（决定线强温度修正）。此前 H₂O/CO/CH₄ 的所有同位素都用主同位素的数值（只有 NH₃ 区分两种），HD¹⁶O、CH₃D 等在 1500 K 的 Q 比值会偏差 11–28%。
+- 数据来自 HITRAN molparam 与 TIPS-2021 的 `q<ID>.txt` 表，生成在 `isotopologue_data.py`；需要新增同位素时运行 `python tools/fit_isotopologue_tips.py`（需联网）。
+- HITRAN/HITEMP 线强**已含天然丰度**，所以 `--isotope-scale "H2O:4=2.0,CH4:3=0.5"` 表示相对天然丰度的倍数（默认 1），用于研究 D/H、¹³C/¹²C 等比例变化。
+- 解析器支持 HITRAN 的 `0/A/B…` 同位素字符；线表中出现未登记的同位素会在开始前报错，而不是中途失败。
+- 每次运行额外输出 `isotopologue_inventory.csv`（各同位素的谱线数与强度）。
+- 注意：新表与旧代码内嵌的拟合在 ≤800 K 一致，但 CH₄ 在 1800 K 差 2.9%、¹⁵NH₃ 在 1000–1800 K 差 1.6–20%（旧拟合的来源不详）。本项目温度范围 550–1450 K，影响主要在 ¹⁵NH₃ 的高温端。
+
+## 权重
+
+- 反演：`python invert_surrogate.py --window-weights "1200-1400=1,1900-2300=2,2800-3200=1"`（损失权重，自动归一化到均值 1）。
+- 同位素权重在正演时设置（见上），因为通量对丰度非线性，不能在最终光谱 CSV 上事后加权。
+
+## 测试
+
+```powershell
+python tests/test_isotopologue.py
+```
+
 # V1.1 HITRAN LBL + Two-stream + ML reproduction
 
 This directory contains a standalone reproduction of the workflow shown in the teacher-provided images. The physical forward model reads only `../dataset/6aa4b041.par`; it does **not** read `code/ml_test_dataset.npz` or `code/run_summary.json`.

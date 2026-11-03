@@ -193,7 +193,7 @@ def validate_checkpoint_data(checkpoint, directory):
             raise ValueError(f'Checkpoint normalization/config mismatch: {key}')
 
 # V4 解析梯度与多起点最小二乘
-import argparse,json,time
+import argparse,json,re,time
 
 from pathlib import Path
 
@@ -271,9 +271,11 @@ class NumpyGP:
                 z=np.log10(np.maximum(flux,1e-30))
         return z,jac
 
-def retrieve(models,observed,x_train,y_train,y_scale,*,starts=5,max_nfev=120,loss_scaling='standardized'):
+def retrieve(models,observed,x_train,y_train,y_scale,*,starts=5,max_nfev=120,loss_scaling='standardized',channel_weights=None):
     """No validation/test parameter truths are accepted by this API."""
     weights=1/np.maximum(y_scale,1e-12) if loss_scaling=='standardized' else np.ones_like(y_scale)
+    # channel_weights are LOSS weights (squared-residual weights), hence sqrt on the residual.
+    if channel_weights is not None: weights=weights*np.sqrt(channel_weights)
     distances=np.mean(((y_train-observed)*weights)**2,axis=1)
     neighbors=x_train[np.argsort(distances)[:starts]]
     # Additional midpoint is a fixed physical prior, independent of held-out truths.
@@ -313,7 +315,18 @@ def save_inversion_spectra(output_dir, sample_ids, window_names, grids, truth, p
     )
 
 
-def run_gp_retrieval(input_dir,output_dir,split_name='test',starts=5,max_nfev=120,loss_scaling='standardized',sample_limit=None):
+def parse_window_weights(text):
+    """'1200-1400=1,1900-2300=2' -> {'window_1200_1400':1.0,'window_1900_2300':2.0}."""
+    out={}
+    for item in filter(None,(t.strip() for t in (text or '').split(','))):
+        m=re.fullmatch(r'([0-9.]+)-([0-9.]+)=([0-9.eE+-]+)',item)
+        if not m: raise ValueError(f'窗口权重格式应为 1200-1400=2.0，收到：{item!r}')
+        w=float(m.group(3))
+        if not np.isfinite(w) or w<0: raise ValueError(f'窗口权重必须是非负有限数：{item!r}')
+        out[f'window_{float(m.group(1)):g}_{float(m.group(2)):g}']=w
+    return out
+
+def run_gp_retrieval(input_dir,output_dir,split_name='test',starts=5,max_nfev=120,loss_scaling='standardized',sample_limit=None,window_weights=None):
     input_dir,output_dir=Path(input_dir),Path(output_dir); output_dir.mkdir(parents=True,exist_ok=True)
     payload=[]; ref=None
     windows=sorted(p for p in input_dir.glob('window_*') if (p/'surrogate_model.pt').is_file())
@@ -336,13 +349,20 @@ def run_gp_retrieval(input_dir,output_dir,split_name='test',starts=5,max_nfev=12
     models=[NumpyGP(p[1]['gp_config']) for p in payload]
     y=np.concatenate([p[2] for p in payload],axis=1)
     y_scale=np.concatenate([p[1]['y_std'] for p in payload])
+    channel_weights=None
+    if window_weights:
+        unknown=set(window_weights)-{p[0].name for p in payload}
+        if unknown: raise ValueError(f'窗口权重指定了不存在的窗口：{sorted(unknown)}；可用窗口：{[p[0].name for p in payload]}')
+        channel_weights=np.concatenate([np.full(p[2].shape[1],window_weights.get(p[0].name,1.0)) for p in payload])
+        channel_weights=channel_weights/np.mean(channel_weights)   # keep overall loss scale
+        print('窗口权重（归一化后均值=1）：',{p[0].name:round(float(window_weights.get(p[0].name,1.0)/np.mean(np.concatenate([np.full(q[2].shape[1],window_weights.get(q[0].name,1.0)) for q in payload]))),4) for p in payload},flush=True)
     y_train=y[tr].copy(); x_train=x[tr].copy()
     observed=y[ev].copy(); del y
     estimates=[]; diagnostics=[]; spectra=[]
     started=time.perf_counter()
     with threadpool_limits(limits=1):
       for rank,obs in enumerate(observed):
-        theta,cost,nfev,success=retrieve(models,obs,x_train,y_train,y_scale,starts=starts,max_nfev=max_nfev,loss_scaling=loss_scaling)
+        theta,cost,nfev,success=retrieve(models,obs,x_train,y_train,y_scale,starts=starts,max_nfev=max_nfev,loss_scaling=loss_scaling,channel_weights=channel_weights)
         estimates.append(theta); diagnostics.append([int(ids[ev[rank]]),cost,nfev,int(success)])
         spectra.append(np.concatenate([m.predict_jacobian(theta)[0] for m in models]))
         if rank%10==0: print(f'{split_name} retrieval {rank+1}/{len(ev)} cost={cost:.5g}',flush=True)
@@ -353,7 +373,7 @@ def run_gp_retrieval(input_dir,output_dir,split_name='test',starts=5,max_nfev=12
     metrics={name:dict(mae_percent=float(np.abs(rel[:,j]).mean()),rmse_percent=float(np.sqrt(np.mean(rel[:,j]**2))),
                        p95_abs_percent=float(np.percentile(np.abs(rel[:,j]),95))) for j,name in enumerate(NAMES)}
     report=dict(split=split_name,fit_rows=len(tr),evaluation_rows=len(ev),train_evaluation_overlap=0,
-                starts=starts,max_nfev=max_nfev,loss_scaling=loss_scaling,
+                starts=starts,max_nfev=max_nfev,loss_scaling=loss_scaling,window_weights=window_weights or {},
                 model_weights_updated=False,initialization_library='training_rows_only',
                 parameters=metrics,normalized_parameter_rmse=float(np.sqrt(np.mean(((estimates-truth)/(HIGH-LOW))**2))),
                 log10_abundance_rmse=float(np.sqrt(np.mean((estimates[:,2:]-truth[:,2:])**2))),
@@ -1215,6 +1235,12 @@ def main() -> None:
         help="maximum parameter distance from the empirical prior as a fraction of each bound span; 0 disables",
     )
     parser.add_argument(
+        "--window-weights",
+        default="",
+        help="V4 GP retrieval: per-window loss weights, e.g. '1200-1400=1,1900-2300=2,2800-3200=1' "
+             "(normalised to mean 1; unlisted windows keep weight 1)",
+    )
+    parser.add_argument(
         "--co-window-weight",
         type=float,
         default=1.25,
@@ -1262,7 +1288,11 @@ def main() -> None:
             if first_checkpoint.get("model_type") == "spectral_gp_v4":
                 count = resolve_sample_count(args.inversion_samples, len(first_checkpoint["test_sample_ids"]))
                 print("V4 inversion backend: CPU float64 analytic-Jacobian least squares", flush=True)
-                run_gp_retrieval(input_dir, output_dir, "test", args.starts, args.max_nfev, "standardized", count)
+                try:
+                    window_weights = parse_window_weights(args.window_weights)
+                except ValueError as exc:
+                    raise SystemExit(f"输入错误：{exc}") from exc
+                run_gp_retrieval(input_dir, output_dir, "test", args.starts, args.max_nfev, "standardized", count, window_weights)
                 return
         if args.retrieval_mode == "least-squares":
             raise SystemExit("least-squares requires V4 GP checkpoints at input-dir/surrogate_model.pt")
