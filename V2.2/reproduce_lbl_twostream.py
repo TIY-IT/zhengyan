@@ -14,9 +14,10 @@ import argparse
 import csv
 import json
 import math
+import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,8 @@ from typing import Any
 import numpy as np
 from scipy.special import wofz
 from scipy.stats import qmc
+
+from isotopologue_data import ISOTOPOLOGUE_INFO, ISOTOPOLOGUE_LOG_Q_CHEBYSHEV
 
 
 # SI constants, except C2 which is convenient for HITRAN wavenumbers in cm^-1.
@@ -39,92 +42,11 @@ SPECIES_BY_ID = {1: "H2O", 5: "CO", 6: "CH4", 11: "NH3"}
 MOLECULE_ID_BY_SPECIES = {name: molecule_id for molecule_id, name in SPECIES_BY_ID.items()}
 MOLECULAR_MASS_AMU = {"H2O": 18.010565, "CO": 27.994915, "CH4": 16.031300, "NH3": 17.026549}
 
-# log(Q(T)) Chebyshev fits to the official HITRAN TIPS-2021 partition sums.
-# The normalized temperature is z = 2 * (T - 296) / (1800 - 296) - 1.
-# Keeping these small fits in the solver avoids importing HAPI at runtime while
-# retaining the temperature dependence needed by HITEMP hot-band transitions.
+# Partition sums: every isotopologue has its own log Q(T) Chebyshev fit in
+# isotopologue_data.py (generated from the HITRAN TIPS-2021 tables by
+# tools/fit_isotopologue_tips.py).  z = 2 * (T - 296) / (1800 - 296) - 1.
 TIPS_T_MIN = 296.0
 TIPS_T_MAX = 1800.0
-TIPS_LOG_Q_CHEBYSHEV = {
-    # Official HAPI TIPS-2021, molecule 11, local isotopes 1 and 2.
-    # Provenance and tables are retained in data/nh3*_tips2021.json.
-    "NH3_2": np.asarray([
-        9.287754096011172, 1.9403924386268507, -0.2167114311717852,
-        0.051117404884015435, -0.017301648647658572, 0.0068892895963108625,
-        -0.0029481381099803776, 0.001242082279950892, -0.0004917574997840121,
-        0.00017996951763144282, -6.140298728726127e-05,
-        2.0001858721397454e-05, -6.696888421602107e-06,
-        2.2694246393326615e-06, -8.995870926945535e-07,
-    ], dtype=float),
-    "NH3": np.asarray([
-        9.767615561115417, 2.0486484461042966, -0.18659183196109064,
-        0.04792227672529305, -0.018887178644703427, 0.007508665196999418,
-        -0.0030128090863259125, 0.0012006766490119045, -0.000465907598284337,
-        0.00017267688274308715, -6.0987549373246714e-05,
-        2.0784498874432286e-05, -7.161639048522417e-06,
-        2.433877947383407e-06, -9.235498088235167e-07,
-    ], dtype=float),
-    "H2O": np.asarray(
-        [
-            6.98917107395382509e00,
-            1.49863881930844567e00,
-            -2.22860465270558000e-01,
-            6.87858590735755254e-02,
-            -2.36370885699241570e-02,
-            8.21302221865525400e-03,
-            -2.93809791735347853e-03,
-            1.08111344810027160e-03,
-            -3.99259656861040339e-04,
-            1.44752976880691220e-04,
-            -5.15080785511572530e-05,
-            1.81963422229492688e-05,
-            -6.67907467400047811e-06,
-            2.39472784126759444e-06,
-            -9.85708246440191158e-07,
-        ],
-        dtype=float,
-    ),
-    "CO": np.asarray(
-        [
-            5.85472378843037244e00,
-            9.51097089097428738e-01,
-            -1.55204725604665666e-01,
-            4.61891060312142956e-02,
-            -1.64579725624708975e-02,
-            5.90119152770013020e-03,
-            -2.04975820096645186e-03,
-            6.97508195453553845e-04,
-            -2.39812061810330156e-04,
-            8.60391038855166246e-05,
-            -3.28545890649194159e-05,
-            1.30974148781065535e-05,
-            -5.41877101789246600e-06,
-            2.07475786073982150e-06,
-            -8.48422570826018617e-07,
-        ],
-        dtype=float,
-    ),
-    "CH4": np.asarray(
-        [
-            9.06643839929376760e00,
-            2.52752421157203155e00,
-            -1.01807839033241893e-01,
-            2.46656490018847090e-02,
-            -1.66286434449243077e-02,
-            8.73454864177044925e-03,
-            -3.78452774800565805e-03,
-            1.39173959688397857e-03,
-            -5.54574398915177319e-04,
-            2.48490097905090042e-04,
-            -4.99181781151286159e-05,
-            -2.88197011188348903e-06,
-            -1.91796643048133783e-05,
-            6.30162494694432528e-06,
-            1.64589381752372863e-05,
-        ],
-        dtype=float,
-    ),
-}
 
 
 class ProgressBar:
@@ -156,12 +78,16 @@ class ProgressBar:
         detail = f"{current}/{self.total} {self.unit}"
         if suffix:
             detail += f" | {suffix}"
-        print(
-            f"\r{self.label} [{bar}] {fraction * 100:6.2f}% {detail} | {eta}",
-            end="",
-            flush=True,
-        )
-        if current >= self.total:
+        if os.environ.get("ZY_PROGRESS"):
+            # Machine-readable line consumed by dashboard.py (no \r tricks).
+            print(f"@@PROGRESS\t{self.label}\t{fraction:.6f}\t{detail}\t{eta}", flush=True)
+        else:
+            print(
+                f"\r{self.label} [{bar}] {fraction * 100:6.2f}% {detail} | {eta}",
+                end="",
+                flush=True,
+            )
+        if current >= self.total and not os.environ.get("ZY_PROGRESS"):
             print(flush=True)
 
     def finish(self, suffix: str = "") -> None:
@@ -238,6 +164,15 @@ class TorchGpuWorkspace:
     line_lists: dict[str, dict[str, Any]]
     weideman_l: float
     weideman_coefficients: Any
+
+
+def _isotopologue_id(char: str) -> int:
+    """HITRAN local isotopologue code: 1-9, then 0 = 10, A = 11, B = 12, ..."""
+    if char.isdigit():
+        return 10 if char == "0" else int(char)
+    if char.isalpha():
+        return ord(char.upper()) - ord("A") + 11
+    raise ValueError(f"无法识别的同位素编号字符 {char!r}")
 
 
 def _as_float(text: str, default: float = 0.0) -> float:
@@ -365,6 +300,8 @@ def parse_hitran_files_for_windows(
         }
         for window in windows
     }
+    lowest_cm = min(window.start_cm for window in windows)
+    highest_cm = max(window.stop_cm for window in windows)
     for species, paths in files_by_species.items():
         if species not in SPECIES_BY_ID.values():
             raise ValueError(f"不支持的分子：{species}")
@@ -396,7 +333,7 @@ def parse_hitran_files_for_windows(
                         ) from exc
                     if molecule_id != MOLECULE_ID_BY_SPECIES[species]:
                         continue
-                    if strength_ref < min_strength:
+                    if strength_ref < min_strength or not lowest_cm <= nu0 <= highest_cm:
                         continue
                     matching_windows = [
                         window
@@ -407,7 +344,7 @@ def parse_hitran_files_for_windows(
                         continue
                     values = {
                         "molecule_id": molecule_id,
-                        "isotopologue": int(line[2:3]),
+                        "isotopologue": _isotopologue_id(line[2:3]),
                         "nu0": nu0,
                         "strength_ref": strength_ref,
                         "einstein_a": _as_float(line[25:35]),
@@ -546,8 +483,8 @@ def load_window_line_lists(
         nh3_lines = line_lists[window.name]["NH3"]
         if not len(nh3_lines):
             raise ValueError(f"窗口 {window.label} 没有 NH3 谱线；请检查 NH3 数据范围与 --min-strength")
-        if not np.isin(nh3_lines.isotopologue, [1, 2]).all():
-            raise ValueError("NH3 配分函数仅支持本地同位素编号 1 和 2")
+        for species_lines in line_lists[window.name].values():
+            validate_isotopologues(species_lines)
     manifest = {
         "data_source": resolved_source,
         "nh3_data_source": "line-file" if resolved_source == "line-file" else "local HITRAN LBL",
@@ -633,49 +570,108 @@ def temperature_profile(t_top: float, t_bottom: float, n_layers: int) -> np.ndar
     return t_top + (t_bottom - t_top) * eta**0.65
 
 
-def log_partition_function_ratio(species: str, temperature: float | np.ndarray) -> np.ndarray:
-    """Return ``log(Q(296 K) / Q(T))`` from the embedded TIPS-2021 fits."""
-    if species not in TIPS_LOG_Q_CHEBYSHEV:
-        raise KeyError(f"No TIPS partition-function fit is available for {species}")
-    temperature_array = np.asarray(temperature, dtype=float)
-    temperature_clipped = np.clip(temperature_array, TIPS_T_MIN, TIPS_T_MAX)
-    normalized_temperature = (
-        2.0 * (temperature_clipped - TIPS_T_MIN) / (TIPS_T_MAX - TIPS_T_MIN) - 1.0
+def _cheb_log_q_ratio(coefficients: np.ndarray, temperature: float | np.ndarray) -> np.ndarray:
+    """log(Q(296 K) / Q(T)) from one 15-term Chebyshev fit (T clipped to 296-1800 K)."""
+    temperature_clipped = np.clip(np.asarray(temperature, dtype=float), TIPS_T_MIN, TIPS_T_MAX)
+    z = 2.0 * (temperature_clipped - TIPS_T_MIN) / (TIPS_T_MAX - TIPS_T_MIN) - 1.0
+    return (np.polynomial.chebyshev.chebval(-1.0, coefficients)
+            - np.polynomial.chebyshev.chebval(z, coefficients))
+
+
+def log_partition_function_ratio(
+    species: str, temperature: float | np.ndarray, isotopologue: int = 1
+) -> np.ndarray:
+    """Return ``log(Q(296 K) / Q(T))`` of one isotopologue (TIPS-2021 table fit)."""
+    key = (species, int(isotopologue))
+    if key not in ISOTOPOLOGUE_LOG_Q_CHEBYSHEV:
+        raise KeyError(
+            f"No TIPS partition-function fit for {species} isotopologue {isotopologue}; "
+            "add it with tools/fit_isotopologue_tips.py"
+        )
+    return _cheb_log_q_ratio(ISOTOPOLOGUE_LOG_Q_CHEBYSHEV[key], temperature)
+
+
+def validate_isotopologues(lines: HitranLines) -> None:
+    """Fail early (not mid-run) if a line list holds an isotopologue without Q/mass data."""
+    unknown = sorted(
+        int(i) for i in np.unique(lines.isotopologue)
+        if (lines.species, int(i)) not in ISOTOPOLOGUE_INFO
     )
-    coefficients = TIPS_LOG_Q_CHEBYSHEV[species]
-    log_q = np.polynomial.chebyshev.chebval(normalized_temperature, coefficients)
-    log_q_ref = np.polynomial.chebyshev.chebval(-1.0, coefficients)
-    return log_q_ref - log_q
+    if unknown:
+        raise ValueError(
+            f"{lines.species} 谱线含有未登记的同位素编号 {unknown}；"
+            "请在 tools/fit_isotopologue_tips.py 中补充质量和配分函数后重新生成 isotopologue_data.py"
+        )
 
 
 def line_molecular_masses(lines: HitranLines) -> np.ndarray:
-    masses = np.full(len(lines), MOLECULAR_MASS_AMU[lines.species])
-    if lines.species == "NH3":
-        masses[lines.isotopologue == 2] = 18.023583
+    """Molar mass in amu of the isotopologue each line belongs to (sets Doppler width)."""
+    masses = np.empty(len(lines), dtype=float)
+    for iso in np.unique(lines.isotopologue):
+        masses[lines.isotopologue == iso] = ISOTOPOLOGUE_INFO[(lines.species, int(iso))][1]
     return masses
 
 
+def line_log_q_ratio(lines: HitranLines, temperature: float) -> np.ndarray:
+    """Per-line log(Q(296)/Q(T)); each line uses its own isotopologue's partition sum."""
+    out = np.empty(len(lines), dtype=float)
+    for iso in np.unique(lines.isotopologue):
+        out[lines.isotopologue == iso] = float(
+            log_partition_function_ratio(lines.species, temperature, int(iso))
+        )
+    return out
+
+
 def line_strength_at_temperature(lines: HitranLines, temperature: float) -> np.ndarray:
-    """HITRAN temperature correction using the embedded TIPS-2021 Q ratio."""
+    """HITRAN temperature correction using per-isotopologue TIPS Q ratios."""
     stimulated = (
         -np.expm1(-C2_CM_K * lines.nu0 / temperature)
         / -np.expm1(-C2_CM_K * lines.nu0 / T_REF)
     )
-    # HITEMP contains very high lower-state energies.  The teacher's simple
-    # Q-ratio approximation is not adequate for these hot-band transitions;
-    # work in log space with a TIPS-based partition-function ratio.
+    # HITEMP contains very high lower-state energies; work in log space.
     positive_strength = np.maximum(lines.strength_ref, np.finfo(float).tiny)
-    log_q_ratio = log_partition_function_ratio(lines.species, temperature)
-    if lines.species == "NH3":
-        log_q_ratio = np.where(lines.isotopologue == 2,
-                               log_partition_function_ratio("NH3_2", temperature), log_q_ratio)
     log_strength = (
         np.log(positive_strength)
-        + log_q_ratio
+        + line_log_q_ratio(lines, temperature)
         - C2_CM_K * lines.e_lower * (1.0 / temperature - 1.0 / T_REF)
         + np.log(np.maximum(stimulated, np.finfo(float).tiny))
     )
     return np.exp(np.clip(log_strength, -745.0, 700.0))
+
+
+def parse_isotopologue_scales(text: str | None) -> dict[tuple[str, int], float]:
+    """Parse ``H2O:4=2.0,CH4:3=0.5`` into {(species, isotopologue): factor}.
+
+    HITRAN/HITEMP line strengths already contain the terrestrial isotopic
+    abundance, so a factor of 1 means "natural ratio"; 2 doubles that
+    isotopologue's lines (e.g. an enhanced D/H or 13C/12C ratio).
+    """
+    scales: dict[tuple[str, int], float] = {}
+    for item in filter(None, (part.strip() for part in (text or "").split(","))):
+        match = re.fullmatch(r"([A-Za-z0-9]+):(\d+)=([0-9.eE+-]+)", item)
+        if not match:
+            raise ValueError(f"同位素权重格式应为 物种:编号=倍数（如 H2O:4=2.0），收到：{item!r}")
+        key = (match.group(1), int(match.group(2)))
+        if key not in ISOTOPOLOGUE_INFO:
+            raise ValueError(f"未登记的同位素 {key[0]}:{key[1]}")
+        factor = float(match.group(3))
+        if not math.isfinite(factor) or factor < 0.0:
+            raise ValueError(f"同位素权重必须是非负有限数：{item!r}")
+        scales[key] = factor
+    return scales
+
+
+def apply_isotopologue_scales(
+    lines: HitranLines, scales: dict[tuple[str, int], float]
+) -> HitranLines:
+    """Return a copy of ``lines`` whose 296 K strengths carry the isotopologue weights."""
+    factor = np.ones(len(lines), dtype=float)
+    for (species, iso), value in scales.items():
+        if species == lines.species:
+            factor[lines.isotopologue == iso] = value
+    if np.all(factor == 1.0):
+        return lines
+    return replace(lines, strength_ref=lines.strength_ref * factor)
 
 
 def species_cross_section(
@@ -810,6 +806,11 @@ def create_torch_gpu_workspace(
             for field in fields
         }
         gpu_lines[species]["isotopologue"] = torch.as_tensor(lines.isotopologue, device=device)
+        validate_isotopologues(lines)
+        iso_ids = [int(i) for i in np.unique(lines.isotopologue)]
+        gpu_lines[species]["iso_ids"] = iso_ids
+        gpu_lines[species]["iso_index"] = torch.as_tensor(
+            np.searchsorted(np.asarray(iso_ids), lines.isotopologue), dtype=torch.long, device=device)
         gpu_lines[species]["molecular_mass_amu"] = torch.as_tensor(
             line_molecular_masses(lines), dtype=dtype, device=device)
         # HITEMP contains reference strengths far below float32's normal
@@ -900,25 +901,24 @@ def _torch_chebyshev_eval(x: Any, coefficients: Any) -> Any:
 
 
 def _torch_log_partition_function_ratio(
-    workspace: TorchGpuWorkspace, species: str, temperatures: Any
+    workspace: TorchGpuWorkspace, species: str, iso_ids: list[int], temperatures: Any
 ) -> Any:
-    """CUDA evaluation of log(Q(296 K) / Q(T)) from the TIPS-2021 fits."""
+    """CUDA log(Q(296)/Q(T)) for each listed isotopologue; shape [len(iso_ids), batch]."""
     torch = workspace.torch
-    temperature_clipped = torch.clamp(
-        temperatures, min=TIPS_T_MIN, max=TIPS_T_MAX
-    )
-    normalized_temperature = (
-        2.0 * (temperature_clipped - TIPS_T_MIN) / (TIPS_T_MAX - TIPS_T_MIN)
-        - 1.0
-    )
-    coefficients = torch.as_tensor(
-        TIPS_LOG_Q_CHEBYSHEV[species],
-        dtype=workspace.dtype,
-        device=workspace.device,
-    )
-    log_q = _torch_chebyshev_eval(normalized_temperature, coefficients)
-    log_q_ref = _torch_chebyshev_eval(torch.full_like(normalized_temperature, -1.0), coefficients)
-    return log_q_ref - log_q
+    temperature_clipped = torch.clamp(temperatures, min=TIPS_T_MIN, max=TIPS_T_MAX)
+    z = 2.0 * (temperature_clipped - TIPS_T_MIN) / (TIPS_T_MAX - TIPS_T_MIN) - 1.0
+    if not iso_ids:
+        return torch.zeros((0, temperatures.shape[-1]), dtype=workspace.dtype, device=workspace.device)
+    rows = []
+    for iso in iso_ids:
+        coefficients = torch.as_tensor(
+            ISOTOPOLOGUE_LOG_Q_CHEBYSHEV[(species, iso)],
+            dtype=workspace.dtype, device=workspace.device,
+        )
+        log_q = _torch_chebyshev_eval(z, coefficients)
+        log_q_ref = _torch_chebyshev_eval(torch.full_like(z, -1.0), coefficients)
+        rows.append(log_q_ref - log_q)
+    return torch.stack(rows, dim=0)
 
 
 def _torch_species_cross_section_batch(
@@ -941,11 +941,11 @@ def _torch_species_cross_section_batch(
         / -torch.expm1(-C2_CM_K * nu0 / T_REF)
     )
     log_strength_max = math.log(torch.finfo(workspace.dtype).max) - math.log(1.0e6)
-    log_q_ratio = _torch_log_partition_function_ratio(workspace, species, temperatures)
-    if species == "NH3":
-        log_q_ratio = torch.where(lines["isotopologue"][:, None] == 2,
-                                  _torch_log_partition_function_ratio(workspace, "NH3_2", temperatures),
-                                  log_q_ratio)
+    # Each line uses the partition sum of its own isotopologue: evaluate one
+    # [iso, batch] table, then gather per line.
+    iso_ids = lines["iso_ids"]
+    q_table = _torch_log_partition_function_ratio(workspace, species, iso_ids, temperatures[0])
+    log_q_ratio = q_table[lines["iso_index"]]
     log_strength = (
         lines["log_strength_ref"][:, None]
         + log_q_ratio
@@ -1454,6 +1454,21 @@ def save_line_inventory(
                 float(np.max(lines.strength_ref)) if has_lines else "",
             ]
         )
+    iso_rows = []
+    for species, lines in line_lists.items():
+        for iso in np.unique(lines.isotopologue):
+            mask = lines.isotopologue == iso
+            iso_rows.append([
+                species, int(iso), ISOTOPOLOGUE_INFO[(species, int(iso))][0],
+                ISOTOPOLOGUE_INFO[(species, int(iso))][1], int(mask.sum()),
+                float(np.sum(lines.strength_ref[mask])), float(np.max(lines.strength_ref[mask])),
+            ])
+    save_csv(
+        output_dir / "isotopologue_inventory.csv",
+        ["species", "isotopologue_id", "afgl_code", "mass_amu", "line_count",
+         "strength_sum_296K", "strength_max_296K"],
+        iso_rows,
+    )
     save_csv(
         output_dir / "line_inventory.csv",
         [
@@ -1733,6 +1748,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--windows",
         default="1200-1400,1900-2300,2800-3200",
         help="comma-separated independent windows in cm-1",
+    )
+    parser.add_argument(
+        "--isotope-scale",
+        default="",
+        help="isotopologue weights relative to natural abundance, e.g. 'H2O:4=2.0,CH4:3=0.5' "
+             "(species:HITRAN local isotopologue id=factor; unlisted isotopologues keep factor 1)",
     )
     parser.add_argument(
         "--grid-step",
@@ -2043,6 +2064,19 @@ def main() -> None:
         )
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise SystemExit(f"数据集加载失败：{exc}") from exc
+
+    try:
+        isotope_scales = parse_isotopologue_scales(args.isotope_scale)
+    except ValueError as exc:
+        raise SystemExit(f"--isotope-scale 参数错误：{exc}") from exc
+    if isotope_scales:
+        line_lists_by_window = {
+            name: {sp: apply_isotopologue_scales(lines, isotope_scales) for sp, lines in per_species.items()}
+            for name, per_species in line_lists_by_window.items()
+        }
+        print("同位素权重（相对天然丰度）：" + ", ".join(
+            f"{sp}:{iso}={f:g}" for (sp, iso), f in isotope_scales.items()), flush=True)
+    data_manifest["isotopologue_scales"] = {f"{sp}:{iso}": f for (sp, iso), f in isotope_scales.items()}
 
     manifest = {
         **data_manifest,
